@@ -16,8 +16,21 @@ import org.jetbrains.annotations.NotNull;
 import java.util.List;
 import java.util.Optional;
 
+/**
+ * Bridge between Create's slot-based inventory and AE2's keyed storage.
+ *
+ * IMPORTANT: Create's packager may visit a virtual slot repeatedly while
+ * processing a single order. Rebuilding AE2's entire available-stack index
+ * for every visit has catastrophic cost for large orders.
+ * This implementation takes one snapshot of virtual slot identities per
+ * server tick, without caching quantities or actual extraction results.
+ */
 public class MEProxyInventoryHandler implements IItemHandler, IFluidHandler {
-    MEProxyBlockEntity blockEntity;
+    private final MEProxyBlockEntity blockEntity;
+    private long snapshotTick = Long.MIN_VALUE;
+    private NetworkStorage snapshotStorage;
+    private List<AEItemKey> itemKeys = List.of();
+    private List<AEFluidKey> fluidKeys = List.of();
 
     public MEProxyInventoryHandler(MEProxyBlockEntity meProxyBlockEntity) {
         this.blockEntity = meProxyBlockEntity;
@@ -25,21 +38,46 @@ public class MEProxyInventoryHandler implements IItemHandler, IFluidHandler {
 
     private Optional<NetworkStorage> getStorage() {
         IGrid grid = blockEntity.getMainNode().getGrid();
-        if (grid == null)
-            return Optional.empty();
+        if (grid == null) return Optional.empty();
         return Optional.of((NetworkStorage) grid.getStorageService().getInventory());
     }
 
-    List<AEFluidKey> getFluidKeys() {
-        return getStorage().map(storage ->
-                storage.getAvailableStacks().keySet().stream().filter(aeKey -> aeKey instanceof AEFluidKey).map(aeKey -> ((AEFluidKey) aeKey)).toList()
-        ).orElse(List.of());
+    private void refreshKeys(NetworkStorage storage) {
+        long tick = blockEntity.getLevel() == null ? Long.MIN_VALUE : blockEntity.getLevel().getGameTime();
+        if (storage == snapshotStorage && tick == snapshotTick) return;
+        snapshotStorage = storage;
+        snapshotTick = tick;
+        // One AE2 enumeration shared by BOTH inventory interfaces.
+        var keys = storage.getAvailableStacks().keySet();
+        itemKeys = keys.stream().filter(k -> k instanceof AEItemKey)
+                .map(k -> (AEItemKey) k).toList();
+        fluidKeys = keys.stream().filter(k -> k instanceof AEFluidKey)
+                .map(k -> (AEFluidKey) k).toList();
+    }
+
+    private void clearSnapshot() {
+        snapshotStorage = null;
+        snapshotTick = Long.MIN_VALUE;
+        itemKeys = List.of();
+        fluidKeys = List.of();
+    }
+
+    private NetworkStorage storageWithSnapshot() {
+        NetworkStorage storage = getStorage().orElse(null);
+        if (storage == null) {
+            clearSnapshot();
+            return null;
+        }
+        refreshKeys(storage);
+        return storage;
     }
 
     List<AEItemKey> getItemKeys() {
-        return getStorage().map(storage ->
-                storage.getAvailableStacks().keySet().stream().filter(aeKey -> aeKey instanceof AEItemKey).map(aeKey -> ((AEItemKey) aeKey)).toList()
-        ).orElse(List.of());
+        return storageWithSnapshot() == null ? List.of() : itemKeys;
+    }
+
+    List<AEFluidKey> getFluidKeys() {
+        return storageWithSnapshot() == null ? List.of() : fluidKeys;
     }
 
     @Override
@@ -50,14 +88,11 @@ public class MEProxyInventoryHandler implements IItemHandler, IFluidHandler {
     @NotNull
     @Override
     public FluidStack getFluidInTank(int tank) {
-        if (getStorage().isEmpty())
-            return FluidStack.EMPTY;
-
-
-        if (tank >= getFluidKeys().size())
-            return FluidStack.EMPTY;
-
-        return getFluidKeys().get(tank).toStack(((int) getStorage().orElse(null).extract(getFluidKeys().get(tank), Integer.MAX_VALUE, Actionable.SIMULATE, IActionSource.empty())));
+        NetworkStorage storage = storageWithSnapshot();
+        if (storage == null || tank < 0 || tank >= fluidKeys.size()) return FluidStack.EMPTY;
+        AEFluidKey key = fluidKeys.get(tank);
+        long amount = storage.extract(key, Integer.MAX_VALUE, Actionable.SIMULATE, IActionSource.empty());
+        return amount > 0 ? key.toStack((int) Math.min(amount, Integer.MAX_VALUE)) : FluidStack.EMPTY;
     }
 
     @Override
@@ -67,48 +102,41 @@ public class MEProxyInventoryHandler implements IItemHandler, IFluidHandler {
 
     @Override
     public boolean isFluidValid(int tank, @NotNull FluidStack stack) {
-        if (getStorage().isEmpty())
-            return false;
-
-        return getStorage().orElse(null).insert(AEFluidKey.of(stack), stack.getAmount(), Actionable.SIMULATE, IActionSource.empty()) > 0;
+        NetworkStorage storage = getStorage().orElse(null);
+        return storage != null && !stack.isEmpty() &&
+                storage.insert(AEFluidKey.of(stack), stack.getAmount(), Actionable.SIMULATE, IActionSource.empty()) > 0;
     }
 
     @Override
     public int fill(FluidStack resource, FluidAction action) {
-        if (getStorage().isEmpty())
-            return 0;
-
-        return (int) getStorage().orElse(null).insert(AEFluidKey.of(resource), resource.getAmount(), action == FluidAction.EXECUTE ? Actionable.MODULATE : Actionable.SIMULATE, IActionSource.empty());
+        NetworkStorage storage = getStorage().orElse(null);
+        if (storage == null || resource.isEmpty()) return 0;
+        return (int) storage.insert(AEFluidKey.of(resource), resource.getAmount(),
+                action == FluidAction.EXECUTE ? Actionable.MODULATE : Actionable.SIMULATE, IActionSource.empty());
     }
 
     @NotNull
     @Override
     public FluidStack drain(FluidStack resource, FluidAction action) {
-        if (getStorage().isEmpty())
-            return FluidStack.EMPTY;
-
-        FluidStack copied = resource.copy();
-
-        if (copied.getFluid() instanceof EmptyFluid)
-            return FluidStack.EMPTY;
-
-        copied.setAmount(
-                ((int) getStorage().orElse(null).extract(AEFluidKey.of(resource), resource.getAmount(), action == FluidAction.EXECUTE ? Actionable.MODULATE : Actionable.SIMULATE, IActionSource.empty())));
-        return copied.getAmount() > 0 ? copied : FluidStack.EMPTY;
+        NetworkStorage storage = getStorage().orElse(null);
+        if (storage == null || resource.isEmpty() || resource.getFluid() instanceof EmptyFluid) return FluidStack.EMPTY;
+        long removed = storage.extract(AEFluidKey.of(resource), resource.getAmount(),
+                action == FluidAction.EXECUTE ? Actionable.MODULATE : Actionable.SIMULATE, IActionSource.empty());
+        if (removed <= 0) return FluidStack.EMPTY;
+        FluidStack result = resource.copy();
+        result.setAmount((int) Math.min(removed, Integer.MAX_VALUE));
+        return result;
     }
 
     @NotNull
     @Override
     public FluidStack drain(int maxDrain, FluidAction action) {
-        FluidStack copied = getFluidInTank(0).copy();
-
-        if (copied.getFluid() instanceof EmptyFluid)
-            return FluidStack.EMPTY;
-
-        if (copied.getAmount() > maxDrain)
-            copied.setAmount(maxDrain);
-
-        return drain(copied, action);
+        if (maxDrain <= 0) return FluidStack.EMPTY;
+        FluidStack selected = getFluidInTank(0);
+        if (selected.isEmpty()) return FluidStack.EMPTY;
+        selected = selected.copy();
+        selected.setAmount(Math.min(maxDrain, selected.getAmount()));
+        return drain(selected, action);
     }
 
     @Override
@@ -119,42 +147,37 @@ public class MEProxyInventoryHandler implements IItemHandler, IFluidHandler {
     @NotNull
     @Override
     public ItemStack getStackInSlot(int slot) {
-        if (getStorage().isEmpty())
-            return ItemStack.EMPTY;
-
-        if (slot >= getItemKeys().size())
-            return ItemStack.EMPTY;
-
-        return getItemKeys().get(slot).toStack(((int) getStorage().orElse(null).extract(getItemKeys().get(slot), Integer.MAX_VALUE, Actionable.SIMULATE, IActionSource.empty())));
+        NetworkStorage storage = storageWithSnapshot();
+        if (storage == null || slot < 0 || slot >= itemKeys.size()) return ItemStack.EMPTY;
+        AEItemKey key = itemKeys.get(slot);
+        long available = storage.extract(key, Integer.MAX_VALUE, Actionable.SIMULATE, IActionSource.empty());
+        return available > 0 ? key.toStack((int) Math.min(available, Integer.MAX_VALUE)) : ItemStack.EMPTY;
     }
 
     @NotNull
     @Override
     public ItemStack insertItem(int slot, @NotNull ItemStack stack, boolean simulate) {
-        if (getStorage().isEmpty())
-            return stack;
-
-        ItemStack copied = stack.copy();
-
-        copied.setCount(copied.getCount() - (int) getStorage().orElse(null).insert(AEItemKey.of(stack), stack.getCount(), simulate ? Actionable.SIMULATE : Actionable.MODULATE, IActionSource.empty()));
-
-        return copied;
+        NetworkStorage storage = getStorage().orElse(null);
+        if (storage == null || stack.isEmpty() || slot < 0) return stack;
+        AEItemKey key = AEItemKey.of(stack);
+        if (key == null) return stack;
+        long inserted = storage.insert(key, stack.getCount(),
+                simulate ? Actionable.SIMULATE : Actionable.MODULATE, IActionSource.empty());
+        if (inserted <= 0) return stack;
+        ItemStack remainder = stack.copy();
+        remainder.shrink((int) Math.min(inserted, stack.getCount()));
+        return remainder;
     }
 
     @NotNull
     @Override
     public ItemStack extractItem(int slot, int amount, boolean simulate) {
-        if (getStorage().isEmpty())
-            return ItemStack.EMPTY;
-
-        ItemStack stackInSlot = getStackInSlot(slot).copy();
-
-        AEItemKey key = AEItemKey.of(stackInSlot);
-        if (key == null) return ItemStack.EMPTY;
-
-        stackInSlot.setCount((int) getStorage().orElse(null).extract(key, amount, simulate ? Actionable.SIMULATE : Actionable.MODULATE, IActionSource.empty()));
-
-        return stackInSlot;
+        NetworkStorage storage = storageWithSnapshot();
+        if (storage == null || amount <= 0 || slot < 0 || slot >= itemKeys.size()) return ItemStack.EMPTY;
+        AEItemKey key = itemKeys.get(slot);
+        long removed = storage.extract(key, amount,
+                simulate ? Actionable.SIMULATE : Actionable.MODULATE, IActionSource.empty());
+        return removed > 0 ? key.toStack((int) Math.min(removed, Integer.MAX_VALUE)) : ItemStack.EMPTY;
     }
 
     @Override
@@ -164,6 +187,6 @@ public class MEProxyInventoryHandler implements IItemHandler, IFluidHandler {
 
     @Override
     public boolean isItemValid(int slot, @NotNull ItemStack stack) {
-        return insertItem(slot, stack, true).getCount() == 0;
+        return slot >= 0 && !stack.isEmpty() && insertItem(slot, stack, true).isEmpty();
     }
 }
