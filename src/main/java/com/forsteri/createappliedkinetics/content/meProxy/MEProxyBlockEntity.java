@@ -16,12 +16,14 @@ import net.neoforged.neoforge.capabilities.RegisterCapabilitiesEvent;
 import java.util.EnumSet;
 
 public class MEProxyBlockEntity extends AENetworkedPoweredBlockEntity {
+    private final MEProxyInventoryHandler inventory;
     private boolean pendingReconnect = false;
     private int reconnectCountdown = -1;
 
     public MEProxyBlockEntity(BlockEntityType<?> blockEntityType, BlockPos pos, BlockState blockState) {
         super(blockEntityType, pos, blockState);
         this.getMainNode().setIdlePowerUsage(0.0F);
+        this.inventory = new MEProxyInventoryHandler(this);
     }
 
     @Override
@@ -88,12 +90,12 @@ public class MEProxyBlockEntity extends AENetworkedPoweredBlockEntity {
         event.registerBlockEntity(
                 Capabilities.ItemHandler.BLOCK,
                 Registration.meProxyBlockEntity.get(),
-                (be, context) -> new MEProxyInventoryHandler(be)
+                (be, context) -> be.inventory
         );
         event.registerBlockEntity(
                 Capabilities.FluidHandler.BLOCK,
                 Registration.meProxyBlockEntity.get(),
-                (be, context) -> new MEProxyInventoryHandler(be)
+                (be, context) -> be.inventory
         );
     }
 }

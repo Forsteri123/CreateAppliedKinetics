@@ -78,35 +78,33 @@ public class Registration {
                 .register();
     }
 
+    public static BlockEntry<EnergyProviderBlock> energyProviderBlock = CreateAppliedKinetics.REGISTERATE
+            .setTooltipModifierFactory(item -> new ItemDescription.Modifier(item, FontHelper.Palette.STANDARD_CREATE)
+                    .andThen(TooltipModifier.mapNull(KineticStats.create(item))))
+            .block("energy_provider", EnergyProviderBlock::new)
+            .blockstate(BlockStateGen.directionalBlockProvider(false))
+            .properties(BlockBehaviour.Properties::noOcclusion)
+            .properties(p -> p.strength(1.5f, 6.0f))
+            .onRegister(block -> BlockStressValues.IMPACTS.register(block, () -> 4.0))
+            .item(EnergyProviderBlockItem::new)
+            .transform(customItemModel())
+            .register();
 
-public static BlockEntry<EnergyProviderBlock> energyProviderBlock = CreateAppliedKinetics.REGISTERATE
-        .setTooltipModifierFactory(item -> new ItemDescription.Modifier(item, FontHelper.Palette.STANDARD_CREATE)
-                .andThen(TooltipModifier.mapNull(KineticStats.create(item))))
-        .block("energy_provider", EnergyProviderBlock::new)
-        .blockstate(BlockStateGen.directionalBlockProvider(false))
-        .properties(BlockBehaviour.Properties::noOcclusion)
-        .properties(p -> p.strength(1.5f, 6.0f))
-        .onRegister(block -> BlockStressValues.IMPACTS.register(block, () -> 4.0))
-        .item(EnergyProviderBlockItem::new)
-        .transform(customItemModel())
-        .register();
+    public static BlockEntityEntry<EnergyProviderBlockEntity> energyProviderBlockEntity = CreateAppliedKinetics.REGISTERATE
+            .blockEntity("energy_provider", EnergyProviderBlockEntity::new)
+            .visual(() -> OrientedRotatingVisual.of(AllPartialModels.SHAFT_HALF))
+            .renderer(() -> ShaftRenderer::new)
+            .validBlock(energyProviderBlock)
+            .register();
 
-public static BlockEntityEntry<EnergyProviderBlockEntity> energyProviderBlockEntity = CreateAppliedKinetics.REGISTERATE
-        .blockEntity("energy_provider", EnergyProviderBlockEntity::new)
-        .visual(() -> OrientedRotatingVisual.of(AllPartialModels.SHAFT_HALF))
-        .renderer(() -> ShaftRenderer::new)
-        .validBlock(energyProviderBlock)
-        .register();
-
-public static BlockEntry<MEProxyBlock> meProxyBlock = CreateAppliedKinetics.REGISTERATE
-        .block("me_proxy", MEProxyBlock::new)
-        .lang("ME Proxy")
-        .properties(BlockBehaviour.Properties::noOcclusion)
-        .properties(p -> p.strength(1.5f, 6.0f))
-        .item(MEProxyBlockItem::new)
-        .build()
-        .register();
-
+    public static BlockEntry<MEProxyBlock> meProxyBlock = CreateAppliedKinetics.REGISTERATE
+            .block("me_proxy", MEProxyBlock::new)
+            .lang("ME Proxy")
+            .properties(BlockBehaviour.Properties::noOcclusion)
+            .properties(p -> p.strength(1.5f, 6.0f))
+            .item(MEProxyBlockItem::new)
+            .build()
+            .register();
 
     public static BlockEntityEntry<MEProxyBlockEntity> meProxyBlockEntity = CreateAppliedKinetics.REGISTERATE.blockEntity("me_proxy", MEProxyBlockEntity::new)
         .validBlock(meProxyBlock)

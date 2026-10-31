@@ -24,6 +24,8 @@ import java.util.Optional;
  * for every visit has catastrophic cost for large orders.
  * This implementation takes one snapshot of virtual slot identities per
  * server tick, without caching quantities or actual extraction results.
+ * The block entity owns one handler and exposes it as both capabilities,
+ * so the item and fluid views share that snapshot.
  */
 public class MEProxyInventoryHandler implements IItemHandler, IFluidHandler {
     private final MEProxyBlockEntity blockEntity;
@@ -43,11 +45,22 @@ public class MEProxyInventoryHandler implements IItemHandler, IFluidHandler {
     }
 
     private void refreshKeys(NetworkStorage storage) {
-        long tick = blockEntity.getLevel() == null ? Long.MIN_VALUE : blockEntity.getLevel().getGameTime();
+        var level = blockEntity.getLevel();
+        if (level == null) {
+            // A missing level has no tick to invalidate against, so don't keep a snapshot.
+            rebuildKeys(storage);
+            snapshotStorage = null;
+            snapshotTick = Long.MIN_VALUE;
+            return;
+        }
+        long tick = level.getGameTime();
         if (storage == snapshotStorage && tick == snapshotTick) return;
         snapshotStorage = storage;
         snapshotTick = tick;
-        // One AE2 enumeration shared by BOTH inventory interfaces.
+        rebuildKeys(storage);
+    }
+
+    private void rebuildKeys(NetworkStorage storage) {
         var keys = storage.getAvailableStacks().keySet();
         itemKeys = keys.stream().filter(k -> k instanceof AEItemKey)
                 .map(k -> (AEItemKey) k).toList();
