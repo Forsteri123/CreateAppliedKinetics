@@ -1,0 +1,8 @@
+
+{
+    "replace": false,
+    "values": [
+        "createappliedkinetics:me_proxy",
+        "createappliedkinetics:energy_provider"
+    ]
+}
